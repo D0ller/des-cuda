@@ -11,7 +11,7 @@
 __global__ void cuda_des_encode_block(uint64_t block, uint64_t key, uint64_t *encoded);
 __global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded, uint64_t limit, uint64_t *key, int *done,uint64_t loop_start);
 
-void run_des_crack(uint64_t block, uint64_t encoded, uint64_t key_length, uint64_t *key);
+void run_des_crack(uint64_t block, uint64_t encoded, int key_length, uint64_t *key);
 void run_des_encode_block(uint64_t key, uint64_t block, uint64_t *result);
 uint64_t calculate_limit(int key_length);
 
@@ -62,8 +62,8 @@ __global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded, uint64_t
 		bits_copy(i, &current_key, 0, 25, 7);
 		bits_copy(i, &current_key, 7, 33, 7);
 		bits_copy(i, &current_key, 14, 41, 7);
-		//bits_copy(i, &current_key, 21, 49, 7);
-		//bits_copy(i, &current_key, 28, 57, 7);
+		bits_copy(i, &current_key, 21, 49, 7);
+		bits_copy(i, &current_key, 28, 57, 7);
 		//printf("key : %x\n", current_key);
 
 		//bits_print_grouped(current_key, 8, 64);
