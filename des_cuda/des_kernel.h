@@ -9,9 +9,9 @@
 #include "des.h"
 
 __global__ void cuda_des_encode_block(uint64_t block, uint64_t key, uint64_t *encoded);
-__global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded,uint64_t limit, uint64_t *key, int *done);
+__global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded, uint64_t limit, uint64_t *key, int *done,uint64_t loop_start);
 
-void run_des_crack(uint64_t block, uint64_t encoded, int key_length, uint64_t *key);
+void run_des_crack(uint64_t block, uint64_t encoded, uint64_t key_length, uint64_t *key);
 void run_des_encode_block(uint64_t key, uint64_t block, uint64_t *result);
 uint64_t calculate_limit(int key_length);
 
@@ -25,14 +25,14 @@ __global__ void cuda_des_encode_block(uint64_t block, uint64_t key, uint64_t *en
 __constant__ uint64_t POW_2_42 = 4398046511104;
 __constant__ uint16_t POW_2_14 = 16384;
 
-__global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded,uint64_t limit, uint64_t *key, int* done) {
+__global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded, uint64_t limit, uint64_t *key, int* done,uint64_t unit_size) {
 	const int threadCount = 512;
 	int blockCount = gridDim.x;
 	int tbid = blockIdx.x*threadCount + threadIdx.x;
 	int id = threadIdx.x;
 	int offset = blockIdx.x * threadCount;
 
-	if ((*done) == 1){
+	if ((*done) == 1) {
 		return;
 	}
 
@@ -47,14 +47,14 @@ __global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded,uint64_t 
 	//bits_copy(total_id, &current_key, 23, 27, 1);
 
 	/*if (tbid == 16383) {
-		*key = current_key;
+	*key = current_key;
 	}*/
-	
+
 	uint64_t result;
-	
+
 	//const uint64_t max = 34359738368;
-    	for (uint64_t i=0;i<limit;i++) {
-    //for (uint64_t i = 0; i < max; i++) {
+	for (uint64_t i = unit_size; i<limit; i++) {
+		//for (uint64_t i = 0; i < max; i++) {
 		// clear first 40 bits
 		current_key = current_key << 40;
 		current_key = current_key >> 40;
@@ -62,8 +62,11 @@ __global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded,uint64_t 
 		bits_copy(i, &current_key, 0, 25, 7);
 		bits_copy(i, &current_key, 7, 33, 7);
 		bits_copy(i, &current_key, 14, 41, 7);
-		bits_copy(i, &current_key, 21, 49, 7);
-		bits_copy(i, &current_key, 28, 57, 7);
+		//bits_copy(i, &current_key, 21, 49, 7);
+		//bits_copy(i, &current_key, 28, 57, 7);
+		//printf("key : %x\n", current_key);
+
+		//bits_print_grouped(current_key, 8, 64);
 
 		result = full_des_encode_block(current_key, block);
 		if (result == encoded) {
@@ -72,9 +75,9 @@ __global__ void cuda_crack_des_kernel(uint64_t block, uint64_t encoded,uint64_t 
 			break;
 		}
 
-	        if (i % 1024 == 0 && (*done)==1) {
-	        	break;
-	        }
+		if (i % 1024 == 0 && (*done) == 1) {
+			break;
+		}
 	}
 }
 
@@ -93,28 +96,55 @@ uint64_t calculate_limit(int key_length) {
 	return limit;
 }
 
-void run_des_crack(uint64_t block, uint64_t encoded, int key_length, uint64_t *key) {
+
+
+void run_des_crack(uint64_t plain, uint64_t encoded, int key_length, uint64_t *key) {
 	uint64_t *dev_key;
 	uint64_t key_val = 0;
 	int *done;
 	uint64_t limit = calculate_limit(key_length);
-	
+
+	const uint64_t block_num =  4 * KB;
+	const uint64_t thread_num = 512;
+
+	/* Unit size for calculation */
+	//My GTX-1060 is suitable for 256 (over 256 causes stack-overflow)
+	int unit_size = 256;
+
+	if (limit < unit_size)
+	{
+		unit_size = limit;
+	}
+
 	// select device
 	//_cudaSetDevice(0);	
 	//_cudaResizeStack();
+
 	// allocate memory
 	_cudaMalloc((void**)&dev_key, sizeof(uint64_t));
-	_cudaMalloc((void**)&done,sizeof(int));
+	_cudaMalloc((void**)&done, sizeof(int));
+	
 	// copy values
 	_cudaMemcpy(dev_key, &key_val, sizeof(uint64_t), cudaMemcpyHostToDevice);
 	int done_value = 0;
-	_cudaMemcpy(done,&done_value,sizeof(int),cudaMemcpyHostToDevice);
 
-	//cuda_crack_des_kernel << <32678, 512 >> >(block, encoded, limit, dev_key, done);
-	cuda_crack_des_kernel << <4096, 512 >> >(block, encoded, limit, dev_key, done);
-	_cudaDeviceSynchronize("crack_des_kernel");
+	_cudaMemcpy(done, &done_value, sizeof(int), cudaMemcpyHostToDevice);
 
-	//_cudaMemcpy(&done_value,done,sizeof(int),cudaMemcpyDeviceToHost);
+
+	int i;
+
+	for (i = 0; i < (limit / unit_size); i++)
+	{
+		//printf("Run Cracking Unit No %d ...\n",i+1);
+		cuda_crack_des_kernel << <block_num, thread_num >> >(plain, encoded, (i+1)*unit_size, dev_key, done, i*unit_size);
+		_cudaDeviceSynchronize("");
+		_cudaMemcpy(&done_value, done, sizeof(int), cudaMemcpyDeviceToHost);
+		if (done_value == 1)
+		{
+			printf("Cracked!!\n");
+			break;
+		}
+	}
 	//printf("done = %d\n",done_value);
 
 	// copy result
@@ -128,7 +158,7 @@ void run_des_encode_block(uint64_t key, uint64_t block, uint64_t *result) {
 	//_cudaSetDevice(0);
 	_cudaMalloc((void**)&dev_result, sizeof(uint64_t));
 
-	cuda_des_encode_block<<<1,1>>>(block, key, dev_result);
+	cuda_des_encode_block << <1, 1 >> >(block, key, dev_result);
 	_cudaDeviceSynchronize("cuda_des_encode_block");
 
 	_cudaMemcpy(result, dev_result, sizeof(uint64_t), cudaMemcpyDeviceToHost);
